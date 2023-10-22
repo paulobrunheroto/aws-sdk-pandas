@@ -32,7 +32,23 @@ from awswrangler.athena._utils import (
 
 from ._cache import _cache_manager, _CacheInfo, _check_for_cached_results
 
+shapely_wkt = _utils.import_optional_dependency("shapely.wkt")
+geopandas = _utils.import_optional_dependency("geopandas")
+
 _logger: logging.Logger = logging.getLogger(__name__)
+
+
+@_utils.check_optional_dependency(shapely_wkt, "shapely")
+@_utils.check_optional_dependency(geopandas, "geopandas")
+def _cast_geometry(df: pd.DataFrame, parse_geometry: List[str] = None):
+    def load_geom_wkt(x):
+        """Load geometry from well-known text."""
+        return shapely_wkt.loads(x)
+
+    for col in parse_geometry:
+        df[col] = geopandas.GeoSeries(df[col].apply(load_geom_wkt))
+
+    return geopandas.GeoDataFrame(df)
 
 
 def _extract_ctas_manifest_paths(path: str, boto3_session: Optional[boto3.Session] = None) -> List[str]:
@@ -46,11 +62,11 @@ def _extract_ctas_manifest_paths(path: str, boto3_session: Optional[boto3.Sessio
 
 
 def _fix_csv_types_generator(
-    dfs: Iterator[pd.DataFrame], parse_dates: List[str], binaries: List[str]
+    dfs: Iterator[pd.DataFrame], parse_dates: List[str], binaries: List[str], parse_geometry: List[str]
 ) -> Iterator[pd.DataFrame]:
     """Apply data types cast to a Pandas DataFrames Generator."""
     for df in dfs:
-        yield _fix_csv_types(df=df, parse_dates=parse_dates, binaries=binaries)
+        yield _fix_csv_types(df=df, parse_dates=parse_dates, binaries=binaries, parse_geometry=parse_geometry)
 
 
 def _add_query_metadata_generator(
@@ -62,7 +78,9 @@ def _add_query_metadata_generator(
         yield df
 
 
-def _fix_csv_types(df: pd.DataFrame, parse_dates: List[str], binaries: List[str]) -> pd.DataFrame:
+def _fix_csv_types(
+    df: pd.DataFrame, parse_dates: List[str], binaries: List[str], parse_geometry: List[str]
+) -> pd.DataFrame:
     """Apply data types cast to a Pandas DataFrames."""
     if len(df.index) > 0:
         for col in parse_dates:
@@ -74,6 +92,10 @@ def _fix_csv_types(df: pd.DataFrame, parse_dates: List[str], binaries: List[str]
                 )
         for col in binaries:
             df[col] = df[col].str.encode(encoding="utf-8")
+
+    if geopandas and parse_geometry:
+        df = _cast_geometry(df, parse_geometry=parse_geometry)
+
     return df
 
 
@@ -197,7 +219,12 @@ def _fetch_csv_result(
     )
     _logger.debug("Start type casting...")
     if _chunksize is None:
-        df = _fix_csv_types(df=ret, parse_dates=query_metadata.parse_dates, binaries=query_metadata.binaries)
+        df = _fix_csv_types(
+            df=ret,
+            parse_dates=query_metadata.parse_dates,
+            binaries=query_metadata.binaries,
+            parse_geometry=query_metadata.parse_geometry,
+        )
         df = _apply_query_metadata(df=df, query_metadata=query_metadata)
         if keep_files is False:
             s3.delete_objects(
@@ -207,7 +234,12 @@ def _fetch_csv_result(
                 s3_additional_kwargs=s3_additional_kwargs,
             )
         return df
-    dfs = _fix_csv_types_generator(dfs=ret, parse_dates=query_metadata.parse_dates, binaries=query_metadata.binaries)
+    dfs = _fix_csv_types_generator(
+        dfs=ret,
+        parse_dates=query_metadata.parse_dates,
+        binaries=query_metadata.binaries,
+        parse_geometry=query_metadata.parse_geometry,
+    )
     dfs = _add_query_metadata_generator(dfs=dfs, query_metadata=query_metadata)
     if keep_files is False:
         return _delete_after_iterate(
@@ -395,6 +427,7 @@ def _resolve_query_without_cache_regular(
     boto3_session: Optional[boto3.Session],
     execution_params: Optional[List[str]] = None,
     dtype_backend: Literal["numpy_nullable", "pyarrow"] = "numpy_nullable",
+    client_request_token: Optional[str] = None,
 ) -> Union[pd.DataFrame, Iterator[pd.DataFrame]]:
     wg_config: _WorkGroupConfig = _get_workgroup_config(session=boto3_session, workgroup=workgroup)
     s3_output = _get_s3_output(s3_output=s3_output, wg_config=wg_config, boto3_session=boto3_session)
@@ -410,6 +443,7 @@ def _resolve_query_without_cache_regular(
         encryption=encryption,
         kms_key=kms_key,
         execution_params=execution_params,
+        client_request_token=client_request_token,
         boto3_session=boto3_session,
     )
     _logger.debug("Query id: %s", query_id)
@@ -458,6 +492,7 @@ def _resolve_query_without_cache(
     pyarrow_additional_kwargs: Optional[Dict[str, Any]] = None,
     execution_params: Optional[List[str]] = None,
     dtype_backend: Literal["numpy_nullable", "pyarrow"] = "numpy_nullable",
+    client_request_token: Optional[str] = None,
 ) -> Union[pd.DataFrame, Iterator[pd.DataFrame]]:
     """
     Execute a query in Athena and returns results as DataFrame, back to `read_sql_query`.
@@ -538,6 +573,7 @@ def _resolve_query_without_cache(
         boto3_session=boto3_session,
         execution_params=execution_params,
         dtype_backend=dtype_backend,
+        client_request_token=client_request_token,
     )
 
 
@@ -744,6 +780,7 @@ def read_sql_query(  # pylint: disable=too-many-arguments,too-many-locals
     keep_files: bool = True,
     use_threads: Union[bool, int] = True,
     boto3_session: Optional[boto3.Session] = None,
+    client_request_token: Optional[str] = None,
     athena_cache_settings: Optional[typing.AthenaCacheSettings] = None,
     data_source: Optional[str] = None,
     athena_query_wait_polling_delay: float = _QUERY_WAIT_POLLING_DELAY,
@@ -757,11 +794,11 @@ def read_sql_query(  # pylint: disable=too-many-arguments,too-many-locals
 
     **Related tutorial:**
 
-    - `Amazon Athena <https://aws-sdk-pandas.readthedocs.io/en/3.2.1/
+    - `Amazon Athena <https://aws-sdk-pandas.readthedocs.io/en/3.4.0/
       tutorials/006%20-%20Amazon%20Athena.html>`_
-    - `Athena Cache <https://aws-sdk-pandas.readthedocs.io/en/3.2.1/
+    - `Athena Cache <https://aws-sdk-pandas.readthedocs.io/en/3.4.0/
       tutorials/019%20-%20Athena%20Cache.html>`_
-    - `Global Configurations <https://aws-sdk-pandas.readthedocs.io/en/3.2.1/
+    - `Global Configurations <https://aws-sdk-pandas.readthedocs.io/en/3.4.0/
       tutorials/021%20-%20Global%20Configurations.html>`_
 
     **There are three approaches available through ctas_approach and unload_approach parameters:**
@@ -825,7 +862,7 @@ def read_sql_query(  # pylint: disable=too-many-arguments,too-many-locals
     /athena.html#Athena.Client.get_query_execution>`_ .
 
     For a practical example check out the
-    `related tutorial <https://aws-sdk-pandas.readthedocs.io/en/3.2.1/
+    `related tutorial <https://aws-sdk-pandas.readthedocs.io/en/3.4.0/
     tutorials/024%20-%20Athena%20Query%20Metadata.html>`_!
 
 
@@ -906,6 +943,13 @@ def read_sql_query(  # pylint: disable=too-many-arguments,too-many-locals
         If integer is provided, specified number is used.
     boto3_session : boto3.Session(), optional
         Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    client_request_token : str, optional
+        A unique case-sensitive string used to ensure the request to create the query is idempotent (executes only once).
+        If another StartQueryExecution request is received, the same response is returned and another query is not created.
+        If a parameter has changed, for example, the QueryString , an error is returned.
+        If you pass the same client_request_token value with different parameters the query fails with error
+        message "Idempotent parameters do not match". Use this only with ctas_approach=False and unload_approach=False
+        and disabled cache.
     athena_cache_settings: typing.AthenaCacheSettings, optional
         Parameters of the Athena cache settings such as max_cache_seconds, max_cache_query_inspections,
         max_remote_cache_entries, and max_local_cache_entries.
@@ -990,46 +1034,44 @@ def read_sql_query(  # pylint: disable=too-many-arguments,too-many-locals
         raise exceptions.InvalidArgumentCombination("Only one of ctas_approach=True or unload_approach=True is allowed")
     if unload_parameters and unload_parameters.get("file_format") not in (None, "PARQUET"):
         raise exceptions.InvalidArgumentCombination("Only PARQUET file format is supported if unload_approach=True")
+    if client_request_token and athena_cache_settings:
+        raise exceptions.InvalidArgumentCombination(
+            "Only one of `client_request_token` or `athena_cache_settings` is allowed."
+        )
+    if client_request_token and (ctas_approach or unload_approach):
+        raise exceptions.InvalidArgumentCombination(
+            "Using `client_request_token` is only allowed when `ctas_approach=False` and `unload_approach=False`."
+        )
     chunksize = sys.maxsize if ctas_approach is False and chunksize is True else chunksize
 
     # Substitute query parameters if applicable
     sql, execution_params = _apply_formatter(sql, params, paramstyle)
 
-    athena_cache_settings = athena_cache_settings if athena_cache_settings else {}
-    max_cache_seconds = athena_cache_settings.get("max_cache_seconds", 0)
-    max_cache_query_inspections = athena_cache_settings.get("max_cache_query_inspections", 50)
-    max_remote_cache_entries = athena_cache_settings.get("max_remote_cache_entries", 50)
-    max_local_cache_entries = athena_cache_settings.get("max_local_cache_entries", 100)
-
-    max_remote_cache_entries = min(max_remote_cache_entries, max_local_cache_entries)
-
-    _cache_manager.max_cache_size = max_local_cache_entries
-    cache_info: _CacheInfo = _check_for_cached_results(
-        sql=sql,
-        boto3_session=boto3_session,
-        workgroup=workgroup,
-        max_cache_seconds=max_cache_seconds,
-        max_cache_query_inspections=max_cache_query_inspections,
-        max_remote_cache_entries=max_remote_cache_entries,
-    )
-    _logger.debug("Cache info:\n%s", cache_info)
-    if cache_info.has_valid_cache is True:
-        _logger.debug("Valid cache found. Retrieving...")
-        try:
-            return _resolve_query_with_cache(
-                cache_info=cache_info,
-                categories=categories,
-                chunksize=chunksize,
-                use_threads=use_threads,
-                session=boto3_session,
-                athena_query_wait_polling_delay=athena_query_wait_polling_delay,
-                s3_additional_kwargs=s3_additional_kwargs,
-                pyarrow_additional_kwargs=pyarrow_additional_kwargs,
-                dtype_backend=dtype_backend,
-            )
-        except Exception as e:  # pylint: disable=broad-except
-            _logger.error(e)  # if there is anything wrong with the cache, just fallback to the usual path
-            _logger.debug("Corrupted cache. Continuing to execute query...")
+    if not client_request_token:
+        cache_info: _CacheInfo = _check_for_cached_results(
+            sql=sql,
+            boto3_session=boto3_session,
+            workgroup=workgroup,
+            athena_cache_settings=athena_cache_settings,
+        )
+        _logger.debug("Cache info:\n%s", cache_info)
+        if cache_info.has_valid_cache is True:
+            _logger.debug("Valid cache found. Retrieving...")
+            try:
+                return _resolve_query_with_cache(
+                    cache_info=cache_info,
+                    categories=categories,
+                    chunksize=chunksize,
+                    use_threads=use_threads,
+                    session=boto3_session,
+                    athena_query_wait_polling_delay=athena_query_wait_polling_delay,
+                    s3_additional_kwargs=s3_additional_kwargs,
+                    pyarrow_additional_kwargs=pyarrow_additional_kwargs,
+                    dtype_backend=dtype_backend,
+                )
+            except Exception as e:  # pylint: disable=broad-except
+                _logger.error(e)  # if there is anything wrong with the cache, just fallback to the usual path
+                _logger.debug("Corrupted cache. Continuing to execute query...")
 
     ctas_parameters = ctas_parameters if ctas_parameters else {}
     ctas_database = ctas_parameters.get("database")
@@ -1062,6 +1104,7 @@ def read_sql_query(  # pylint: disable=too-many-arguments,too-many-locals
         pyarrow_additional_kwargs=pyarrow_additional_kwargs,
         execution_params=execution_params,
         dtype_backend=dtype_backend,
+        client_request_token=client_request_token,
     )
 
 
@@ -1085,6 +1128,7 @@ def read_sql_table(
     keep_files: bool = True,
     use_threads: Union[bool, int] = True,
     boto3_session: Optional[boto3.Session] = None,
+    client_request_token: Optional[str] = None,
     athena_cache_settings: Optional[typing.AthenaCacheSettings] = None,
     data_source: Optional[str] = None,
     dtype_backend: Literal["numpy_nullable", "pyarrow"] = "numpy_nullable",
@@ -1095,11 +1139,11 @@ def read_sql_table(
 
     **Related tutorial:**
 
-    - `Amazon Athena <https://aws-sdk-pandas.readthedocs.io/en/3.2.1/
+    - `Amazon Athena <https://aws-sdk-pandas.readthedocs.io/en/3.4.0/
       tutorials/006%20-%20Amazon%20Athena.html>`_
-    - `Athena Cache <https://aws-sdk-pandas.readthedocs.io/en/3.2.1/
+    - `Athena Cache <https://aws-sdk-pandas.readthedocs.io/en/3.4.0/
       tutorials/019%20-%20Athena%20Cache.html>`_
-    - `Global Configurations <https://aws-sdk-pandas.readthedocs.io/en/3.2.1/
+    - `Global Configurations <https://aws-sdk-pandas.readthedocs.io/en/3.4.0/
       tutorials/021%20-%20Global%20Configurations.html>`_
 
     **There are three approaches available through ctas_approach and unload_approach parameters:**
@@ -1163,7 +1207,7 @@ def read_sql_table(
     /athena.html#Athena.Client.get_query_execution>`_ .
 
     For a practical example check out the
-    `related tutorial <https://aws-sdk-pandas.readthedocs.io/en/3.2.1/
+    `related tutorial <https://aws-sdk-pandas.readthedocs.io/en/3.4.0/
     tutorials/024%20-%20Athena%20Query%20Metadata.html>`_!
 
 
@@ -1242,6 +1286,13 @@ def read_sql_table(
         If integer is provided, specified number is used.
     boto3_session : boto3.Session(), optional
         Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    client_request_token : str, optional
+        A unique case-sensitive string used to ensure the request to create the query is idempotent (executes only once).
+        If another StartQueryExecution request is received, the same response is returned and another query is not created.
+        If a parameter has changed, for example, the QueryString , an error is returned.
+        If you pass the same client_request_token value with different parameters the query fails with error
+        message "Idempotent parameters do not match". Use this only with ctas_approach=False and unload_approach=False
+        and disabled cache.
     athena_cache_settings: typing.AthenaCacheSettings, optional
         Parameters of the Athena cache settings such as max_cache_seconds, max_cache_query_inspections,
         max_remote_cache_entries, and max_local_cache_entries.
@@ -1295,6 +1346,7 @@ def read_sql_table(
         keep_files=keep_files,
         use_threads=use_threads,
         boto3_session=boto3_session,
+        client_request_token=client_request_token,
         athena_cache_settings=athena_cache_settings,
         data_source=data_source,
         s3_additional_kwargs=s3_additional_kwargs,

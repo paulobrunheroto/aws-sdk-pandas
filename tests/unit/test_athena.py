@@ -136,6 +136,7 @@ def test_athena_ctas(path, path2, path3, glue_table, glue_table2, glue_database,
     assert len(wr.s3.list_objects(path=path3)) == 0
 
 
+@pytest.mark.modin_index
 def test_athena_read_sql_ctas_bucketing(path, path2, glue_table, glue_table2, glue_database, glue_ctas_database):
     df = pd.DataFrame({"c0": [0, 1], "c1": ["foo", "bar"]})
     wr.s3.to_parquet(
@@ -155,12 +156,14 @@ def test_athena_read_sql_ctas_bucketing(path, path2, glue_table, glue_table2, gl
             bucketing_info=(["c0"], 1),
         ),
         s3_output=path2,
+        pyarrow_additional_kwargs={"ignore_metadata": True},
     )
     df_no_ctas = wr.athena.read_sql_query(
         sql=f"SELECT * FROM {glue_table}",
         ctas_approach=False,
         database=glue_database,
         s3_output=path2,
+        pyarrow_additional_kwargs={"ignore_metadata": True},
     )
     assert df_ctas.equals(df_no_ctas)
 
@@ -855,6 +858,7 @@ def test_bucketing_catalog_parquet_table(path, glue_database, glue_table):
     assert table["StorageDescriptor"]["BucketColumns"] == bucket_cols
 
 
+@pytest.mark.modin_index
 @pytest.mark.parametrize("bucketing_data", [[0, 1, 2], [False, True, False], ["b", "c", "d"]])
 @pytest.mark.parametrize(
     "dtype",
@@ -907,12 +911,12 @@ def test_bucketing_parquet_dataset(path, glue_database, glue_table, bucketing_da
     if isinstance(bucketing_data[0], str):
         dtype = pd.StringDtype()
 
-    first_bucket_df = wr.s3.read_parquet(path=[r["paths"][0]])
+    first_bucket_df = wr.s3.read_parquet(path=[r["paths"][0]], pyarrow_additional_kwargs={"ignore_metadata": True})
     assert len(first_bucket_df) == 2
     assert pandas_equals(pd.Series([bucketing_data[0], bucketing_data[2]], dtype=dtype), first_bucket_df["c0"])
     assert pandas_equals(pd.Series(["foo", "baz"], dtype=pd.StringDtype()), first_bucket_df["c1"])
 
-    second_bucket_df = wr.s3.read_parquet(path=[r["paths"][1]])
+    second_bucket_df = wr.s3.read_parquet(path=[r["paths"][1]], pyarrow_additional_kwargs={"ignore_metadata": True})
     assert len(second_bucket_df) == 1
     assert pandas_equals(pd.Series([bucketing_data[1]], dtype=dtype), second_bucket_df["c0"])
     assert pandas_equals(pd.Series(["bar"], dtype=pd.StringDtype()), second_bucket_df["c1"])
@@ -943,6 +947,7 @@ def test_bucketing_catalog_csv_table(path, glue_database, glue_table):
     assert table["StorageDescriptor"]["BucketColumns"] == bucket_cols
 
 
+@pytest.mark.modin_index
 @pytest.mark.parametrize("bucketing_data", [[0, 1, 2], [False, True, False], ["b", "c", "d"]])
 @pytest.mark.parametrize(
     "dtype",
@@ -988,12 +993,12 @@ def test_bucketing_csv_dataset(path, glue_database, glue_table, bucketing_data, 
     assert r["paths"][0].endswith("bucket-00000.csv")
     assert r["paths"][1].endswith("bucket-00001.csv")
 
-    first_bucket_df = wr.s3.read_csv(path=[r["paths"][0]], header=None, names=["c0", "c1"])
+    first_bucket_df = wr.s3.read_csv(path=[r["paths"][0]], header=None, names=["c0", "c1"]).reset_index(drop=True)
     assert len(first_bucket_df) == 2
     assert pandas_equals(pd.Series([bucketing_data[0], bucketing_data[2]]), first_bucket_df["c0"])
     assert pandas_equals(pd.Series(["foo", "baz"]), first_bucket_df["c1"])
 
-    second_bucket_df = wr.s3.read_csv(path=[r["paths"][1]], header=None, names=["c0", "c1"])
+    second_bucket_df = wr.s3.read_csv(path=[r["paths"][1]], header=None, names=["c0", "c1"]).reset_index(drop=True)
     assert len(second_bucket_df) == 1
     assert pandas_equals(pd.Series([bucketing_data[1]]), second_bucket_df["c0"])
     assert pandas_equals(pd.Series(["bar"]), second_bucket_df["c1"])
@@ -1008,6 +1013,7 @@ def test_bucketing_csv_dataset(path, glue_database, glue_table, bucketing_data, 
         assert all(x in bucketing_data for x in loaded_df["c0"].to_list())
 
 
+@pytest.mark.modin_index
 @pytest.mark.parametrize("bucketing_data", [[0, 1, 2, 3], [False, True, False, True], ["b", "c", "d", "e"]])
 def test_combined_bucketing_partitioning_parquet_dataset(path, glue_database, glue_table, bucketing_data):
     nb_of_buckets = 2
@@ -1045,22 +1051,22 @@ def test_combined_bucketing_partitioning_parquet_dataset(path, glue_database, gl
     if isinstance(bucketing_data[0], str):
         dtype = pd.StringDtype()
 
-    bucket_df = wr.s3.read_parquet(path=[r["paths"][0]])
+    bucket_df = wr.s3.read_parquet(path=[r["paths"][0]], pyarrow_additional_kwargs={"ignore_metadata": True})
     assert len(bucket_df) == 1
     assert pandas_equals(pd.Series([bucketing_data[0]], dtype=dtype), bucket_df["c0"])
     assert pandas_equals(pd.Series(["foo"], dtype=pd.StringDtype()), bucket_df["c1"])
 
-    bucket_df = wr.s3.read_parquet(path=[r["paths"][1]])
+    bucket_df = wr.s3.read_parquet(path=[r["paths"][1]], pyarrow_additional_kwargs={"ignore_metadata": True})
     assert len(bucket_df) == 1
     assert pandas_equals(pd.Series([bucketing_data[1]], dtype=dtype), bucket_df["c0"])
     assert pandas_equals(pd.Series(["bar"], dtype=pd.StringDtype()), bucket_df["c1"])
 
-    bucket_df = wr.s3.read_parquet(path=[r["paths"][2]])
+    bucket_df = wr.s3.read_parquet(path=[r["paths"][2]], pyarrow_additional_kwargs={"ignore_metadata": True})
     assert len(bucket_df) == 1
     assert pandas_equals(pd.Series([bucketing_data[2]], dtype=dtype), bucket_df["c0"])
     assert pandas_equals(pd.Series(["baz"], dtype=pd.StringDtype()), bucket_df["c1"])
 
-    bucket_df = wr.s3.read_parquet(path=[r["paths"][3]])
+    bucket_df = wr.s3.read_parquet(path=[r["paths"][3]], pyarrow_additional_kwargs={"ignore_metadata": True})
     assert len(bucket_df) == 1
     assert pandas_equals(pd.Series([bucketing_data[3]], dtype=dtype), bucket_df["c0"])
     assert pandas_equals(pd.Series(["boo"], dtype=pd.StringDtype()), bucket_df["c1"])
@@ -1135,6 +1141,7 @@ def test_combined_bucketing_partitioning_csv_dataset(path, glue_database, glue_t
         assert all(x in bucketing_data for x in loaded_df["c0"].to_list())
 
 
+@pytest.mark.modin_index
 def test_multiple_bucketing_columns_parquet_dataset(path, glue_database, glue_table):
     nb_of_buckets = 2
     df = pd.DataFrame({"c0": [0, 1, 2, 3], "c1": [4, 6, 5, 7], "c2": ["foo", "bar", "baz", "boo"]})
@@ -1152,13 +1159,13 @@ def test_multiple_bucketing_columns_parquet_dataset(path, glue_database, glue_ta
     assert r["paths"][0].endswith("bucket-00000.snappy.parquet")
     assert r["paths"][1].endswith("bucket-00001.snappy.parquet")
 
-    first_bucket_df = wr.s3.read_parquet(path=[r["paths"][0]])
+    first_bucket_df = wr.s3.read_parquet(path=[r["paths"][0]], pyarrow_additional_kwargs={"ignore_metadata": True})
     assert len(first_bucket_df) == 2
     assert pandas_equals(pd.Series([0, 3], dtype=pd.Int64Dtype()), first_bucket_df["c0"])
     assert pandas_equals(pd.Series([4, 7], dtype=pd.Int64Dtype()), first_bucket_df["c1"])
     assert pandas_equals(pd.Series(["foo", "boo"], dtype=pd.StringDtype()), first_bucket_df["c2"])
 
-    second_bucket_df = wr.s3.read_parquet(path=[r["paths"][1]])
+    second_bucket_df = wr.s3.read_parquet(path=[r["paths"][1]], pyarrow_additional_kwargs={"ignore_metadata": True})
     assert len(second_bucket_df) == 2
     assert pandas_equals(pd.Series([1, 2], dtype=pd.Int64Dtype()), second_bucket_df["c0"])
     assert pandas_equals(pd.Series([6, 5], dtype=pd.Int64Dtype()), second_bucket_df["c1"])
@@ -1518,6 +1525,137 @@ def test_athena_to_iceberg(path, path2, glue_database, glue_table, partition_col
     assert df.equals(df_out)
 
 
+def test_athena_to_iceberg_schema_evolution_add_columns(
+    path: str, path2: str, glue_database: str, glue_table: str
+) -> None:
+    df = pd.DataFrame({"c0": [0, 1, 2], "c1": [3, 4, 5]})
+    wr.athena.to_iceberg(
+        df=df,
+        database=glue_database,
+        table=glue_table,
+        table_location=path,
+        temp_path=path2,
+        keep_files=False,
+        schema_evolution=True,
+    )
+
+    df["c2"] = [6, 7, 8]
+    wr.athena.to_iceberg(
+        df=df,
+        database=glue_database,
+        table=glue_table,
+        table_location=path,
+        temp_path=path2,
+        keep_files=False,
+        schema_evolution=True,
+    )
+
+    column_types = wr.catalog.get_table_types(glue_database, glue_table)
+    assert len(column_types) == len(df.columns)
+
+    df_out = wr.athena.read_sql_table(
+        table=glue_table,
+        database=glue_database,
+        ctas_approach=False,
+        unload_approach=False,
+    )
+    assert len(df_out) == len(df) * 2
+
+    df["c3"] = [9, 10, 11]
+    with pytest.raises(wr.exceptions.InvalidArgumentValue):
+        wr.athena.to_iceberg(
+            df=df,
+            database=glue_database,
+            table=glue_table,
+            table_location=path,
+            temp_path=path2,
+            keep_files=False,
+            schema_evolution=False,
+        )
+
+
+def test_athena_to_iceberg_schema_evolution_modify_columns(
+    path: str, path2: str, glue_database: str, glue_table: str
+) -> None:
+    # Version 1
+    df = pd.DataFrame({"c1": pd.Series([1.0, 2.0], dtype="float32"), "c2": pd.Series([-1, -2], dtype="int32")})
+
+    wr.athena.to_iceberg(
+        df=df,
+        database=glue_database,
+        table=glue_table,
+        table_location=path,
+        temp_path=path2,
+        keep_files=False,
+        schema_evolution=True,
+    )
+
+    df_out = wr.athena.read_sql_table(
+        table=glue_table,
+        database=glue_database,
+        ctas_approach=False,
+        unload_approach=False,
+    )
+
+    assert len(df_out) == 2
+    assert len(df_out.columns) == 2
+    assert str(df_out["c1"].dtype).startswith("float32")
+    assert str(df_out["c2"].dtype).startswith("Int32")
+
+    # Version 2
+    df2 = pd.DataFrame({"c1": pd.Series([3.0, 4.0], dtype="float64"), "c2": pd.Series([-3, -4], dtype="int64")})
+
+    wr.athena.to_iceberg(
+        df=df2,
+        database=glue_database,
+        table=glue_table,
+        table_location=path,
+        temp_path=path2,
+        keep_files=False,
+        schema_evolution=True,
+    )
+
+    df2_out = wr.athena.read_sql_table(
+        table=glue_table,
+        database=glue_database,
+        ctas_approach=False,
+        unload_approach=False,
+    )
+
+    assert len(df2_out) == 4
+    assert len(df2_out.columns) == 2
+    assert str(df2_out["c1"].dtype).startswith("float64")
+    assert str(df2_out["c2"].dtype).startswith("Int64")
+
+
+def test_athena_to_iceberg_schema_evolution_remove_columns_error(
+    path: str, path2: str, glue_database: str, glue_table: str
+) -> None:
+    df = pd.DataFrame({"c0": [0, 1, 2], "c1": [3, 4, 5]})
+    wr.athena.to_iceberg(
+        df=df,
+        database=glue_database,
+        table=glue_table,
+        table_location=path,
+        temp_path=path2,
+        keep_files=False,
+        schema_evolution=True,
+    )
+
+    df = pd.DataFrame({"c0": [6, 7, 8]})
+
+    with pytest.raises(wr.exceptions.InvalidArgumentCombination):
+        wr.athena.to_iceberg(
+            df=df,
+            database=glue_database,
+            table=glue_table,
+            table_location=path,
+            temp_path=path2,
+            keep_files=False,
+            schema_evolution=True,
+        )
+
+
 def test_to_iceberg_cast(path, path2, glue_table, glue_database):
     df = pd.DataFrame(
         {
@@ -1561,3 +1699,53 @@ def test_to_iceberg_cast(path, path2, glue_table, glue_database):
     )
     df2 = wr.athena.read_sql_table(database=glue_database, table=glue_table, ctas_approach=False)
     assert pandas_equals(df_expected, df2.sort_values("c0").reset_index(drop=True))
+
+
+def test_athena_to_iceberg_with_hyphenated_table_name(
+    path: str, path2: str, glue_database: str, glue_table_with_hyphenated_name: str
+):
+    df = pd.DataFrame({"c0": [1, 2, 3, 4], "c1": ["foo", "bar", "baz", "boo"]})
+    df["c0"] = df["c0"].astype("int")
+    df["c1"] = df["c1"].astype("string")
+
+    wr.athena.to_iceberg(
+        df=df,
+        database=glue_database,
+        table=glue_table_with_hyphenated_name,
+        table_location=path,
+        temp_path=path2,
+        keep_files=False,
+    )
+
+    df_out = wr.athena.read_sql_query(
+        sql=f'SELECT * FROM "{glue_table_with_hyphenated_name}"',
+        database=glue_database,
+        ctas_approach=False,
+        unload_approach=False,
+    )
+
+    assert len(df) == len(df_out)
+    assert len(df.columns) == len(df_out.columns)
+
+
+def test_athena_to_iceberg_column_comments(path: str, path2: str, glue_database: str, glue_table: str) -> None:
+    df = pd.DataFrame({"c0": [0, 1, 2], "c1": [3, 4, 5]})
+    column_comments = {
+        "c0": "comment 0",
+        "c1": "comment 1",
+    }
+    wr.athena.to_iceberg(
+        df=df,
+        database=glue_database,
+        table=glue_table,
+        table_location=path,
+        temp_path=path2,
+        keep_files=False,
+        glue_table_settings={
+            "columns_comments": column_comments,
+        },
+    )
+
+    column_comments_actual = wr.catalog.get_columns_comments(glue_database, glue_table)
+
+    assert column_comments_actual == column_comments
